@@ -52,6 +52,7 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.UUID
+import kotlin.math.min
 
 interface RtmpStatsListener {
     fun onInsufficientBandwidth(currentBytesOutPerSecond: Long, currentQueueBytesOut: Long)
@@ -227,22 +228,22 @@ class CameraDualLiveStreamer(
 
         override fun onOutputFrame(frame: Frame) {
             try {
-                val frames = mutableListOf(frame)
-                if (rtmpMuxerStreams.started && fileMuxerStreams.started) {
-                    frames.add(frame.clone())
-                }
-                if (rtmpMuxerStreams.started) {
-                    val f = frames.removeAt(0)
-                    rtmpMuxerStreams.audioStreamId?.let {
-                        this@CameraDualLiveStreamer.rtmpMuxerStreams.muxer.encode(f, it)
-                    }
-                }
-                if (fileMuxerStreams.started) {
-                    val f = frames.removeAt(0)
-                    fileMuxerStreams.audioStreamId?.let {
-                        this@CameraDualLiveStreamer.fileMuxerStreams.muxer.encode(f, it)
-                    }
-                }
+               val frames = mutableListOf(frame)
+               if (rtmpMuxerStreams.started && fileMuxerStreams.started) {
+                   frames.add(frame.clone())
+               }
+               if (rtmpMuxerStreams.started) {
+                   val f = frames.removeAt(0)
+                   rtmpMuxerStreams.audioStreamId?.let {
+                       this@CameraDualLiveStreamer.rtmpMuxerStreams.muxer.encode(f, it)
+                   }
+               }
+               if (fileMuxerStreams.started) {
+                   val f = frames.removeAt(0)
+                   fileMuxerStreams.audioStreamId?.let {
+                       this@CameraDualLiveStreamer.fileMuxerStreams.muxer.encode(f, it)
+                   }
+               }
             } catch (e: Exception) {
                 throw StreamPackError(e)
             }
@@ -353,7 +354,7 @@ class CameraDualLiveStreamer(
         muxerStreams: MuxerStreams,
         encoderIndex: Int,
         endpoint: IEndpoint
-    ):Boolean {
+    ): Boolean {
         if (!muxerStreams.started) {
             return false
         }
@@ -378,7 +379,7 @@ class CameraDualLiveStreamer(
     }
 
     suspend fun stopRecording() {
-        if(stop(fileMuxerStreams, EncoderIndex.FILE.index, fileWriter)) {
+        if (stop(fileMuxerStreams, EncoderIndex.FILE.index, fileWriter)) {
             recordingListener.onRecordingFinished("file://${fileWriter.file?.absolutePath}")
         }
     }
@@ -524,8 +525,16 @@ class CameraDualLiveStreamer(
                 val deltaGenBytes = currentGenBytes - previousGenBytes
                 val estimatedRealDeltaTxBytes =
                     (deltaTxBytes * txBytesOverheadSlope + txBytesOverheadIntercept).toLong()
+                // sometimes we don't really trust the number of bytes thats being generated.
+                // It seems unrealistically large which would result in false values for
+                // the number of bytes queued. Until we can get realistic values of
+                // bytes sent, we will take the min of this value or the target bandwidth
+                val targetOutBytes =
+                    ((multiEncoder.getTarget(EncoderIndex.RTMP.index).bitrate
+                            + (audioConfig?.startBitrate ?: 0)) / 8).toLong()
+                val estimatedRealDeltaGenBytes = min(deltaGenBytes,targetOutBytes)
 
-                val newQueueBytesOut = deltaGenBytes - estimatedRealDeltaTxBytes
+                val newQueueBytesOut = estimatedRealDeltaGenBytes - estimatedRealDeltaTxBytes
                 val currentQueueBytesOut =
                     maxOf(newQueueBytesOut + (previousQueueBytesOut.lastOrNull() ?: 0), 0)
                 previousQueueBytesOut.add(currentQueueBytesOut)
